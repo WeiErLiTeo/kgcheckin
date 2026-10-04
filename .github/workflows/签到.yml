@@ -1,13 +1,27 @@
-name: 签到
+name: 酷狗音乐打卡与推送
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: '选择手动运行的任务'
+        required: true
+        default: 'checkin'
+        type: choice
+        options:
+          - checkin
+          - notify
+          - both
   schedule:
     - cron: '10 17 * * *'
+    - cron: '5 0 * * *'
 permissions:
   contents: write
   actions: write
+
 jobs:
-  run:
+  checkin:
+    name: 凌晨签到
+    if: github.event.schedule == '10 17 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.action == 'checkin' || inputs.action == 'both'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -30,7 +44,7 @@ jobs:
       - name: 安装依赖
         run: npm run install
         if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-      - name: 执行签到并落盘日志
+      - name: 执行签到并记录日志
         run: |
           mkdir -p log
           npm run main > log/checkin.txt 2>&1 || true
@@ -45,3 +59,61 @@ jobs:
           USERINFO: ${{ secrets.USERINFO }}
           PAT: ${{ secrets.PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+
+  notify:
+    name: 微信推送
+    needs: [checkin]
+    if: |
+      always() &&
+      (
+        github.event.schedule == '5 0 * * *' ||
+        (github.event_name == 'workflow_dispatch' && inputs.action == 'notify') ||
+        (github.event_name == 'workflow_dispatch' && inputs.action == 'both' && needs.checkin.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+      - name: 推送打卡日志
+        run: |
+          if [ -f log/checkin.txt ]; then
+            node -e '
+              const fs = require("fs");
+              let content = fs.readFileSync("log/checkin.txt", "utf8");
+              const token = process.env.PUSHPLUS_TOKEN;
+              if (!token) {
+                console.error("未配置 PUSHPLUS_TOKEN");
+                process.exit(1);
+              }
+              content = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r\n/g, "\n").replace(/\n/g, "<br>");
+              fetch("https://www.pushplus.plus/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  token: token,
+                  title: "酷狗音乐打卡通知",
+                  content: content
+                })
+              })
+              .then(res => res.json())
+              .then(data => {
+                console.log("推送结果:", data);
+                if (data.code !== 200) process.exit(1);
+              })
+              .catch(err => {
+                console.error("推送网络异常:", err);
+                process.exit(1);
+              });
+            '
+            rm -f log/checkin.txt
+            git config --local user.name "github-actions[bot]"
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A log/
+            git commit -m "chore: clean checkin log" || exit 0
+            git pull --rebase
+            git push
+          else
+            echo "未找到 log/checkin.txt 文件，跳过本次推送"
+          fi
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
