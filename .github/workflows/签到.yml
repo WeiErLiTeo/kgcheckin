@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '10 17 * * *'
 permissions:
-  contents: read
+  contents: write
   actions: write
 jobs:
   run:
@@ -30,28 +30,17 @@ jobs:
       - name: 安装依赖
         run: npm run install
         if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
-      - name: 执行签到
-        run: npm run main
+      - name: 执行签到并落盘日志
+        run: |
+          mkdir -p log
+          npm run main > log/checkin.log 2>&1 || true
+          cat log/checkin.log
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add log/checkin.log
+          git commit -m "chore: record checkin log" || exit 0
+          git push
         env:
           USERINFO: ${{ secrets.USERINFO }}
           PAT: ${{ secrets.PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          # 通知渠道（按需配置，全部可选）
-          WECOM_BOT_KEY: ${{ secrets.WECOM_BOT_KEY }}
-          DINGTALK_BOT_KEY: ${{ secrets.DINGTALK_BOT_KEY }}
-          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-          FEISHU_BOT_KEY: ${{ secrets.FEISHU_BOT_KEY }}
-          YUNHU_BOT_KEY: ${{ secrets.YUNHU_BOT_KEY }}
-          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          BARK_KEY: ${{ secrets.BARK_KEY }}
-          BARK_GROUP: ${{ secrets.BARK_GROUP }}
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          MAIL_HOST: ${{ secrets.MAIL_HOST }}
-          MAIL_PORT: ${{ secrets.MAIL_PORT }}
-          MAIL_USER: ${{ secrets.MAIL_USER }}
-          MAIL_PASS: ${{ secrets.MAIL_PASS }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
