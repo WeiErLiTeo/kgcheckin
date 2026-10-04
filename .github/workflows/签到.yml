@@ -1,4 +1,4 @@
-name: 打卡与推送
+name: 酷狗音乐打卡与推送
 on:
   workflow_dispatch:
     inputs:
@@ -46,15 +46,19 @@ jobs:
         if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
       - name: 执行签到并记录日志
         run: |
-          mkdir -p log
-          npm run main > log/checkin.txt 2>&1 || true
-          cat log/checkin.txt
+          mkdir -p /tmp/checkin_data
+          npm run main > /tmp/checkin_data/checkin.txt 2>&1 || true
+          cat /tmp/checkin_data/checkin.txt
+          
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin main || true
+          
+          mkdir -p log
+          cp /tmp/checkin_data/checkin.txt log/checkin.txt
           git add -f log/checkin.txt
           git commit -m "chore: record checkin log" || exit 0
-          git pull --rebase
-          git push
+          git push origin main
         env:
           USERINFO: ${{ secrets.USERINFO }}
           PAT: ${{ secrets.PAT }}
@@ -106,13 +110,13 @@ jobs:
                 process.exit(1);
               });
             '
-            rm -f log/checkin.txt
             git config --local user.name "github-actions[bot]"
             git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git pull origin main || true
+            rm -f log/checkin.txt
             git add -A log/
             git commit -m "chore: clean checkin log" || exit 0
-            git pull --rebase
-            git push
+            git push origin main
           else
             echo "未找到 log/checkin.txt 文件，跳过本次推送"
           fi
