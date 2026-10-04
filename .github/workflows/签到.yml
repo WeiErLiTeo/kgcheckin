@@ -1,4 +1,4 @@
-name: 酷狗音乐打卡与推送
+name: 打卡与推送
 on:
   workflow_dispatch:
     inputs:
@@ -61,7 +61,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
   notify:
-    name: 微信推送
+    name: TG推送
     needs: [checkin]
     if: |
       always() &&
@@ -74,31 +74,32 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
-      - name: 推送打卡日志
+      - name: 推送打卡日志到TG
         run: |
           if [ -f log/checkin.txt ]; then
             node -e '
               const fs = require("fs");
               let content = fs.readFileSync("log/checkin.txt", "utf8");
-              const token = process.env.PUSHPLUS_TOKEN;
-              if (!token) {
-                console.error("未配置 PUSHPLUS_TOKEN");
+              const token = process.env.TG_BOT_TOKEN;
+              const chatId = process.env.TG_USER_ID;
+              if (!token || !chatId) {
+                console.error("未配置 TG_BOT_TOKEN 或 TG_USER_ID");
                 process.exit(1);
               }
-              content = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r\n/g, "\n").replace(/\n/g, "<br>");
-              fetch("https://www.pushplus.plus/send", {
+              content = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+              const message = "🎵 酷狗音乐打卡通知\n\n" + content;
+              fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  token: token,
-                  title: "酷狗音乐打卡通知",
-                  content: content
+                  chat_id: chatId,
+                  text: message
                 })
               })
               .then(res => res.json())
               .then(data => {
-                console.log("推送结果:", data);
-                if (data.code !== 200) process.exit(1);
+                console.log("TG推送结果:", data);
+                if (!data.ok) process.exit(1);
               })
               .catch(err => {
                 console.error("推送网络异常:", err);
@@ -116,4 +117,5 @@ jobs:
             echo "未找到 log/checkin.txt 文件，跳过本次推送"
           fi
         env:
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
