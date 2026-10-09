@@ -65,7 +65,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
   notify:
-    name: TG推送
+    name: 消息推送
     needs: [checkin]
     if: |
       always() &&
@@ -78,37 +78,73 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
-      - name: 推送打卡日志到TG
+      - name: 推送打卡日志到TG和QQ群
         run: |
           if [ -f log/checkin.txt ]; then
             node -e '
               const fs = require("fs");
               let content = fs.readFileSync("log/checkin.txt", "utf8");
-              const token = process.env.TG_BOT_TOKEN;
-              const chatId = process.env.TG_USER_ID;
-              if (!token || !chatId) {
-                console.error("未配置 TG_BOT_TOKEN 或 TG_USER_ID");
-                process.exit(1);
-              }
               content = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
               const message = "🎵 酷狗音乐打卡通知\n\n" + content;
-              fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  chat_id: chatId,
-                  text: message
-                })
-              })
-              .then(res => res.json())
-              .then(data => {
-                console.log("TG推送结果:", data);
-                if (!data.ok) process.exit(1);
-              })
-              .catch(err => {
-                console.error("推送网络异常:", err);
-                process.exit(1);
-              });
+
+              async function runNotify() {
+                // 1. 推送 Telegram
+                const tgToken = process.env.TG_BOT_TOKEN;
+                const tgChatId = process.env.TG_USER_ID;
+                if (tgToken && tgChatId) {
+                  try {
+                    const res = await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ chat_id: tgChatId, text: message })
+                    });
+                    const data = await res.json();
+                    console.log("TG 推送结果:", data.ok ? "成功" : data);
+                  } catch (e) {
+                    console.error("TG 推送失败:", e.message);
+                  }
+                }
+
+                // 2. 推送 QQ 官方群机器人
+                const appId = process.env.QQ_APP_ID;
+                const secret = process.env.QQ_APP_SECRET;
+                const groupOpenId = process.env.QQ_GROUP_OPENID;
+
+                if (appId && secret && groupOpenId) {
+                  try {
+                    // 换取 AccessToken
+                    const tokenRes = await fetch("https://bots.qq.com/app/getAppAccessToken", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ appId: appId, clientSecret: secret })
+                    });
+                    const tokenData = await tokenRes.json();
+                    
+                    if (tokenData.access_token) {
+                      // 发送群文本消息
+                      const qqRes = await fetch(`https://api.sgroup.qq.com/v2/groups/${groupOpenId}/messages`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          "Authorization": `QQBot ${tokenData.access_token}`
+                        },
+                        body: JSON.stringify({
+                          content: message,
+                          msg_type: 0
+                        })
+                      });
+                      const qqData = await qqRes.json();
+                      console.log("QQ 群推送结果:", qqData);
+                    } else {
+                      console.error("获取 QQ AccessToken 失败:", tokenData);
+                    }
+                  } catch (e) {
+                    console.error("QQ 推送网络异常:", e.message);
+                  }
+                }
+              }
+
+              runNotify();
             '
             git config --local user.name "github-actions[bot]"
             git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -123,3 +159,6 @@ jobs:
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
+          QQ_APP_ID: ${{ secrets.QQ_APP_ID }}
+          QQ_APP_SECRET: ${{ secrets.QQ_APP_SECRET }}
+          QQ_GROUP_OPENID: ${{ secrets.QQ_GROUP_OPENID }}
