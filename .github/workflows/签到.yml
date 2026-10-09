@@ -78,7 +78,7 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
-      - name: 推送打卡日志到TG和企业微信
+      - name: 推送打卡日志到所有渠道
         run: |
           if [ -f log/checkin.txt ]; then
             node -e '
@@ -88,7 +88,58 @@ jobs:
               const message = "🎵 酷狗音乐打卡通知\n\n" + content;
 
               async function runNotify() {
-                // 1. 推送 Telegram
+                // 1. 推送企业微信群机器人 (之前的群通知)
+                const wecomKey = process.env.WECOM_BOT_KEY;
+                if (wecomKey) {
+                  try {
+                    const res = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${wecomKey}`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        msgtype: "text",
+                        text: { content: message }
+                      })
+                    });
+                    const data = await res.json();
+                    console.log("群机器人推送结果:", data);
+                  } catch (e) {
+                    console.error("群机器人推送失败:", e.message);
+                  }
+                }
+
+                // 2. 推送个人微信 (自建应用微工作台，直接弹微信服务号)
+                const corpId = process.env.WECOM_CORP_ID;
+                const corpSecret = process.env.WECOM_CORP_SECRET;
+                const agentId = process.env.WECOM_AGENT_ID;
+
+                if (corpId && corpSecret && agentId) {
+                  try {
+                    const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${corpSecret}`);
+                    const tokenData = await tokenRes.json();
+                    
+                    if (tokenData.access_token) {
+                      const sendRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          touser: "@all",
+                          msgtype: "text",
+                          agentid: agentId,
+                          text: { content: message },
+                          safe: 0
+                        })
+                      });
+                      const sendData = await sendRes.json();
+                      console.log("个人微信推送结果:", sendData);
+                    } else {
+                      console.error("获取企业微信 Token 失败:", tokenData);
+                    }
+                  } catch (e) {
+                    console.error("个人微信推送异常:", e.message);
+                  }
+                }
+
+                // 3. 推送 Telegram
                 const tgToken = process.env.TG_BOT_TOKEN;
                 const tgChatId = process.env.TG_USER_ID;
                 if (tgToken && tgChatId) {
@@ -102,25 +153,6 @@ jobs:
                     console.log("TG 推送结果:", data.ok ? "成功" : data);
                   } catch (e) {
                     console.error("TG 推送失败:", e.message);
-                  }
-                }
-
-                // 2. 推送企业微信群机器人
-                const wecomKey = process.env.WECOM_BOT_KEY;
-                if (wecomKey) {
-                  try {
-                    const res = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${wecomKey}`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        msgtype: "text",
-                        text: { content: message }
-                      })
-                    });
-                    const data = await res.json();
-                    console.log("企业微信推送结果:", data);
-                  } catch (e) {
-                    console.error("企业微信推送失败:", e.message);
                   }
                 }
               }
@@ -138,6 +170,9 @@ jobs:
             echo "未找到 log/checkin.txt 文件，跳过本次推送"
           fi
         env:
+          WECOM_BOT_KEY: ${{ secrets.WECOM_BOT_KEY }}
+          WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
+          WECOM_CORP_SECRET: ${{ secrets.WECOM_CORP_SECRET }}
+          WECOM_AGENT_ID: ${{ secrets.WECOM_AGENT_ID }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
-          WECOM_BOT_KEY: ${{ secrets.WECOM_BOT_KEY }}
