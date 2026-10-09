@@ -63,10 +63,9 @@ jobs:
           USERINFO: ${{ secrets.USERINFO }}
           PAT: ${{ secrets.PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          WECOM_BOT_KEY: ${{ secrets.WECOM_BOT_KEY }}
 
   notify:
-    name: TG推送
+    name: 消息推送
     needs: [checkin]
     if: |
       always() &&
@@ -79,37 +78,54 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
-      - name: 推送打卡日志到TG
+      - name: 推送打卡日志到TG和企业微信
         run: |
           if [ -f log/checkin.txt ]; then
             node -e '
               const fs = require("fs");
               let content = fs.readFileSync("log/checkin.txt", "utf8");
-              const token = process.env.TG_BOT_TOKEN;
-              const chatId = process.env.TG_USER_ID;
-              if (!token || !chatId) {
-                console.error("未配置 TG_BOT_TOKEN 或 TG_USER_ID");
-                process.exit(1);
-              }
               content = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
               const message = "🎵 酷狗音乐打卡通知\n\n" + content;
-              fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  chat_id: chatId,
-                  text: message
-                })
-              })
-              .then(res => res.json())
-              .then(data => {
-                console.log("TG推送结果:", data);
-                if (!data.ok) process.exit(1);
-              })
-              .catch(err => {
-                console.error("推送网络异常:", err);
-                process.exit(1);
-              });
+
+              async function runNotify() {
+                // 1. 推送 Telegram
+                const tgToken = process.env.TG_BOT_TOKEN;
+                const tgChatId = process.env.TG_USER_ID;
+                if (tgToken && tgChatId) {
+                  try {
+                    const res = await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ chat_id: tgChatId, text: message })
+                    });
+                    const data = await res.json();
+                    console.log("TG 推送结果:", data.ok ? "成功" : data);
+                  } catch (e) {
+                    console.error("TG 推送失败:", e.message);
+                  }
+                }
+
+                // 2. 推送企业微信群机器人
+                const wecomKey = process.env.WECOM_BOT_KEY;
+                if (wecomKey) {
+                  try {
+                    const res = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${wecomKey}`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        msgtype: "text",
+                        text: { content: message }
+                      })
+                    });
+                    const data = await res.json();
+                    console.log("企业微信推送结果:", data);
+                  } catch (e) {
+                    console.error("企业微信推送失败:", e.message);
+                  }
+                }
+              }
+
+              runNotify();
             '
             git config --local user.name "github-actions[bot]"
             git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -124,3 +140,4 @@ jobs:
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
+          WECOM_BOT_KEY: ${{ secrets.WECOM_BOT_KEY }}
