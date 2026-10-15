@@ -219,24 +219,19 @@ jobs:
               return { simple, detail };
             }
 
-            async function formatWithGemini(simpleText, detailText, logText) {
+            async function estimateWeather(simpleText, detailText, cityNames) {
               const apiKey = process.env.GEMINI_API_KEY;
-              const fallback = `🌤 天气播报\n${simpleText}\n\n🎵 酷狗音乐打卡\n${logText}`;
+              const fallback = simpleText;
               if (!apiKey) return fallback;
 
-              const prompt = `请将以下多来源天气数据和酷狗打卡日志整理成简短干净的纯文本通知。
+              const prompt = `请根据以下多个来源的天气数据，为每个城市估算最终天气。
           要求：
-          1. 仅展示临沂平邑县、青岛黄岛区的天气（天气状况、实时温度、今日最低最高温、湿度）和酷狗打卡结果（账号、领取状态、VIP到期时间）。
-          2. 天气数据来自多个独立来源，请你综合估算每个城市的最终数值：天气状况以多数来源一致的说法为准（英文描述请译成中文）；温度和湿度取各来源的平均值，明显偏离其他来源的异常值可以剔除；程序已给出参考均值，可直接参考。
-          3. 每个城市天气只输出一行最终结果，不要列出各来源明细，不要说明估算过程。
-          4. 严禁添加任何穿衣建议、带伞提醒、问候语或注意事项。
-          5. 保持排版克制、简洁。
+          1. 天气数据来自多个独立来源：天气状况以多数来源一致的说法为准（英文描述请译成中文）；温度和湿度取各来源的平均值，明显偏离其他来源的异常值可以剔除；程序已给出参考均值，可直接参考。
+          2. 每个城市只输出一行，格式严格为：城市名：天气状况，实时 X°C（今日 最低°C ~ 最高°C），湿度 X%
+          3. 不要标题，不要说明估算过程，不要列出各来源明细，严禁添加任何穿衣建议、带伞提醒、问候语或注意事项。
 
           天气数据：
-          ${detailText}
-
-          打卡日志：
-          ${logText}`;
+          ${detailText}`;
 
               const models = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
               for (const model of models) {
@@ -251,7 +246,7 @@ jobs:
                   });
                   const data = await res.json();
                   const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                  if (reply) {
+                  if (reply && cityNames.every((n) => reply.includes(n))) {
                     console.log(`成功使用模型: ${model}`);
                     return reply.trim();
                   }
@@ -264,14 +259,16 @@ jobs:
             }
 
             async function run() {
-              const cities = await Promise.all([
-                getCityWeather("临沂平邑县", 35.5061, 117.6400),
-                getCityWeather("青岛黄岛区", 35.9736, 120.1689)
-              ]);
+              const cityDefs = [
+                ["临沂平邑县", 35.5061, 117.6400],
+                ["青岛黄岛区", 35.9736, 120.1689]
+              ];
+              const cities = await Promise.all(cityDefs.map((c) => getCityWeather(c[0], c[1], c[2])));
               const simpleText = cities.map((c) => c.simple).join("\n");
               const detailText = cities.map((c) => c.detail).join("\n\n");
 
-              const finalMessage = await formatWithGemini(simpleText, detailText, checkinLog);
+              const weatherLines = await estimateWeather(simpleText, detailText, cityDefs.map((c) => c[0]));
+              const finalMessage = `🎵 酷狗音乐打卡通知\n\n${checkinLog}\n\n🌤 天气播报\n${weatherLines}`;
               console.log("准备推送内容:\n", finalMessage);
 
               const tgToken = process.env.TG_BOT_TOKEN;
