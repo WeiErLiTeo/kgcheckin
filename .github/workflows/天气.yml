@@ -1,4 +1,4 @@
-name: 天气整合
+name: 酷狗音乐打卡与推送
 on:
   workflow_dispatch:
     inputs:
