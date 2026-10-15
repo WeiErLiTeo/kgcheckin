@@ -1,0 +1,311 @@
+name: 天气整合
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '请选择手动运行的任务'
+        required: true
+        default: '打卡并推送'
+        type: choice
+        options:
+          - 仅打卡
+          - 仅推送
+          - 打卡并推送
+  schedule:
+    - cron: '10 17 * * *'
+    - cron: '5 0 * * *'
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  checkin:
+    name: 凌晨签到
+    if: github.event.schedule == '10 17 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.action == '仅打卡' || inputs.action == '打卡并推送'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+      - name: 创建 Node 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: ./api/package-lock.json
+      - name: 缓存依赖
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: ./api/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('./api/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      - name: 安装依赖
+        run: npm run install
+        if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
+      - name: 执行签到并记录日志
+        run: |
+          mkdir -p /tmp/checkin_data
+          npm run main > /tmp/checkin_data/checkin.txt 2>&1 || true
+          cat /tmp/checkin_data/checkin.txt
+          
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin main || true
+          
+          mkdir -p log
+          cp /tmp/checkin_data/checkin.txt log/checkin.txt
+          git add -f log/checkin.txt
+          git commit -m "chore: record checkin log" || exit 0
+          git push origin main
+        env:
+          USERINFO: ${{ secrets.USERINFO }}
+          PAT: ${{ secrets.PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+  notify:
+    name: 消息推送
+    needs: [checkin]
+    if: |
+      always() &&
+      (
+        github.event.schedule == '5 0 * * *' ||
+        (github.event_name == 'workflow_dispatch' && inputs.action == '仅推送') ||
+        (github.event_name == 'workflow_dispatch' && inputs.action == '打卡并推送' && needs.checkin.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+      - name: 推送打卡与天气到TG
+        run: |
+          node -e '
+            const fs = require("fs");
+            let checkinLog = "暂无打卡日志";
+            if (fs.existsSync("log/checkin.txt")) {
+              checkinLog = fs.readFileSync("log/checkin.txt", "utf8").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+            }
+
+            const wmoMap = {
+              0: "晴", 1: "大部晴朗", 2: "多云", 3: "阴",
+              45: "雾", 48: "雾凇", 51: "毛毛雨", 53: "中毛毛雨", 55: "密集毛毛雨",
+              56: "冻毛毛雨", 57: "强冻毛毛雨",
+              61: "小雨", 63: "中雨", 65: "大雨", 66: "冻雨", 67: "强冻雨",
+              71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
+              80: "小阵雨", 81: "中阵雨", 82: "强阵雨", 85: "小阵雪", 86: "大阵雪",
+              95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷阵雨伴冰雹"
+            };
+
+            // 挪威气象局要求带上能联系到你的 User-Agent
+            const UA = "kugou-weather-notify/1.0 https://github.com/" + (process.env.GITHUB_REPOSITORY || "");
+
+            const fmt = (x) => (typeof x === "number" && !Number.isNaN(x) ? Math.round(x * 10) / 10 : "-");
+
+            function avg(rows, key) {
+              const v = rows.map((r) => r[key]).filter((x) => typeof x === "number" && !Number.isNaN(x));
+              return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null;
+            }
+
+            async function getJson(url, headers) {
+              const res = await fetch(url, { headers: headers || {}, signal: AbortSignal.timeout(15000) });
+              if (!res.ok) throw new Error("HTTP " + res.status);
+              return res.json();
+            }
+
+            // 来源 1-5：Open-Meteo（综合 + 4 个不同的气象模型）
+            async function fromOpenMeteo(label, model, lat, lon) {
+              const modelPart = model ? "&models=" + model : "";
+              const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=Asia%2FShanghai&forecast_days=1${modelPart}`;
+              const d = await getJson(url);
+              return {
+                name: label,
+                sky: wmoMap[d.current.weather_code] || null,
+                temp: d.current.temperature_2m,
+                min: d.daily.temperature_2m_min[0],
+                max: d.daily.temperature_2m_max[0],
+                hum: d.current.relative_humidity_2m
+              };
+            }
+
+            // 来源 6：wttr.in
+            async function fromWttr(lat, lon) {
+              const d = await getJson(`https://wttr.in/${lat},${lon}?format=j1`);
+              const c = d.current_condition[0];
+              const today = d.weather[0];
+              return {
+                name: "wttr.in",
+                sky: c.weatherDesc && c.weatherDesc[0] ? c.weatherDesc[0].value : null,
+                temp: Number(c.temp_C),
+                min: Number(today.mintempC),
+                max: Number(today.maxtempC),
+                hum: Number(c.humidity)
+              };
+            }
+
+            // 来源 7：挪威气象局 MET Norway
+            async function fromMetNo(lat, lon) {
+              const d = await getJson(`https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat}&lon=${lon}`, { "User-Agent": UA });
+              const t = d.properties.timeseries[0].data;
+              return {
+                name: "MET Norway",
+                sky: t.next_1_hours ? t.next_1_hours.summary.symbol_code : null,
+                temp: t.instant.details.air_temperature,
+                min: null,
+                max: null,
+                hum: t.instant.details.relative_humidity
+              };
+            }
+
+            // 来源 8：7timer（数据比较粗）
+            async function from7Timer(lat, lon) {
+              const d = await getJson(`http://www.7timer.info/bin/api.pl?lon=${lon}&lat=${lat}&product=civil&output=json`);
+              const p = d.dataseries[0];
+              return {
+                name: "7timer",
+                sky: p.weather,
+                temp: p.temp2m,
+                min: null,
+                max: null,
+                hum: parseInt(p.rh2m, 10)
+              };
+            }
+
+            async function getCityWeather(name, lat, lon) {
+              const jobs = [
+                ["Open-Meteo 综合", () => fromOpenMeteo("Open-Meteo 综合", "", lat, lon)],
+                ["Open-Meteo ECMWF", () => fromOpenMeteo("Open-Meteo ECMWF", "ecmwf_ifs025", lat, lon)],
+                ["Open-Meteo GFS", () => fromOpenMeteo("Open-Meteo GFS", "gfs_seamless", lat, lon)],
+                ["Open-Meteo ICON", () => fromOpenMeteo("Open-Meteo ICON", "icon_seamless", lat, lon)],
+                ["Open-Meteo CMA", () => fromOpenMeteo("Open-Meteo CMA", "cma_grapes_global", lat, lon)],
+                ["wttr.in", () => fromWttr(lat, lon)],
+                ["MET Norway", () => fromMetNo(lat, lon)],
+                ["7timer", () => from7Timer(lat, lon)]
+              ];
+
+              const settled = await Promise.allSettled(jobs.map((j) => j[1]()));
+              const rows = [];
+              settled.forEach((r, i) => {
+                const ok = r.status === "fulfilled" && typeof r.value.temp === "number" && !Number.isNaN(r.value.temp);
+                if (ok) {
+                  rows.push(r.value);
+                } else {
+                  const why = r.status === "rejected" ? (r.reason && r.reason.message) : "数据为空";
+                  console.error(`${name} / ${jobs[i][0]} 获取失败: ${why}`);
+                }
+              });
+              console.log(`${name}: ${rows.length}/${jobs.length} 个来源可用`);
+
+              if (rows.length === 0) {
+                return { simple: `${name}：天气获取失败`, detail: `${name}：所有天气来源均获取失败` };
+              }
+
+              const t = avg(rows, "temp");
+              const lo = avg(rows, "min");
+              const hi = avg(rows, "max");
+              const h = avg(rows, "hum");
+
+              // 兜底用的天气状况：Open-Meteo 几个来源里取多数
+              const counts = {};
+              rows.filter((r) => r.name.startsWith("Open-Meteo") && r.sky).forEach((r) => {
+                counts[r.sky] = (counts[r.sky] || 0) + 1;
+              });
+              const sky = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || "未知";
+
+              const simple = `${name}：${sky}，实时 ${fmt(t)}°C（今日 ${fmt(lo)}°C ~ ${fmt(hi)}°C），湿度 ${fmt(h)}%`;
+              const detail = `${name}（共 ${rows.length} 个来源）\n` +
+                rows.map((r) => `- ${r.name}：${r.sky || "无"}，实时 ${fmt(r.temp)}°C，今日 ${fmt(r.min)}~${fmt(r.max)}°C，湿度 ${fmt(r.hum)}%`).join("\n") +
+                `\n程序参考均值：实时 ${fmt(t)}°C，今日 ${fmt(lo)}~${fmt(hi)}°C，湿度 ${fmt(h)}%`;
+              return { simple, detail };
+            }
+
+            async function formatWithGemini(simpleText, detailText, logText) {
+              const apiKey = process.env.GEMINI_API_KEY;
+              const fallback = `🌤 天气播报\n${simpleText}\n\n🎵 酷狗音乐打卡\n${logText}`;
+              if (!apiKey) return fallback;
+
+              const prompt = `请将以下多来源天气数据和酷狗打卡日志整理成简短干净的纯文本通知。
+          要求：
+          1. 仅展示临沂平邑县、青岛黄岛区的天气（天气状况、实时温度、今日最低最高温、湿度）和酷狗打卡结果（账号、领取状态、VIP到期时间）。
+          2. 天气数据来自多个独立来源，请你综合估算每个城市的最终数值：天气状况以多数来源一致的说法为准（英文描述请译成中文）；温度和湿度取各来源的平均值，明显偏离其他来源的异常值可以剔除；程序已给出参考均值，可直接参考。
+          3. 每个城市天气只输出一行最终结果，不要列出各来源明细，不要说明估算过程。
+          4. 严禁添加任何穿衣建议、带伞提醒、问候语或注意事项。
+          5. 保持排版克制、简洁。
+
+          天气数据：
+          ${detailText}
+
+          打卡日志：
+          ${logText}`;
+
+              const models = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
+              for (const model of models) {
+                try {
+                  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      contents: [{ parts: [{ text: prompt }] }],
+                      generationConfig: { temperature: 0.2 }
+                    })
+                  });
+                  const data = await res.json();
+                  const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (reply) {
+                    console.log(`成功使用模型: ${model}`);
+                    return reply.trim();
+                  }
+                  console.error(`Gemini (${model}) 返回异常:`, JSON.stringify(data));
+                } catch (e) {
+                  console.error(`Gemini (${model}) 请求异常:`, e.message);
+                }
+              }
+              return fallback;
+            }
+
+            async function run() {
+              const cities = await Promise.all([
+                getCityWeather("临沂平邑县", 35.5061, 117.6400),
+                getCityWeather("青岛黄岛区", 35.9736, 120.1689)
+              ]);
+              const simpleText = cities.map((c) => c.simple).join("\n");
+              const detailText = cities.map((c) => c.detail).join("\n\n");
+
+              const finalMessage = await formatWithGemini(simpleText, detailText, checkinLog);
+              console.log("准备推送内容:\n", finalMessage);
+
+              const tgToken = process.env.TG_BOT_TOKEN;
+              const tgChatId = process.env.TG_USER_ID;
+              if (!tgToken || !tgChatId) {
+                console.error("未配置 TG_BOT_TOKEN 或 TG_USER_ID");
+                return;
+              }
+
+              try {
+                const res = await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ chat_id: tgChatId, text: finalMessage })
+                });
+                const data = await res.json();
+                console.log("TG 推送结果:", data.ok ? "成功" : JSON.stringify(data));
+              } catch (e) {
+                console.error("TG 推送异常:", e.message);
+              }
+            }
+
+            run();
+          '
+          if [ -f log/checkin.txt ]; then
+            git config --local user.name "github-actions[bot]"
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git pull origin main || true
+            rm -f log/checkin.txt
+            git add -A log/
+            git commit -m "chore: clean checkin log" || exit 0
+            git push origin main
+          fi
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
