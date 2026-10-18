@@ -1,0 +1,24 @@
+
+> main
+> node main.js
+
+[35m账号 Le********n 开始领取VIP...[0m
+[33m开始听歌领取VIP...[0m
+[32m今日已领取[0m
+[33m开始领取VIP...[0m
+[32m第1次领取成功[0m
+[32m第2次领取成功[0m
+[32m第3次领取成功[0m
+[32m第4次领取成功[0m
+[32m第5次领取成功[0m
+[32m第6次领取成功[0m
+[32m第7次领取成功[0m
+[31m第8次领取失败[0m
+[34m今天是：2026-10-18[0m
+[34mVIP到期时间：2027-01-03 22:01:25
+[0m
+[31m异常信息如下:[0m
+{ 'Le********n ad': { status: 0, error_code: 30000 } }
+Error: 领取异常
+    at main (file:///home/runner/work/kgcheckin/kgcheckin/main.js:213:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
