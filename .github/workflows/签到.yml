@@ -348,8 +348,3 @@ jobs:
           WECOM_CORP_SECRET: ${{ secrets.WECOM_CORP_SECRET }}
           WECOM_AGENT_ID: ${{ secrets.WECOM_AGENT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      - name: 自动保活工作流
-        uses: gautamkrishnar/keepalive-workflow@v1
-        with:
-          commit_message: "chore: keep workflow alive"
-          time_elapsed: 45
